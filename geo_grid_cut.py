@@ -21,13 +21,21 @@
  ***************************************************************************/
 """
 from PyQt4.QtCore import QSettings, QTranslator, qVersion, QCoreApplication
-from PyQt4.QtGui import QAction, QIcon
+from PyQt4.QtGui import QAction, QIcon,QFileDialog
+from qgis.core import QgsProject,QgsFeature,QgsGeometry,QgsMapLayer,QgsMapLayerRegistry,QgsVectorFileWriter,QgsCoordinateReferenceSystem,QgsRasterPipe,QgsRasterFileWriter
+from qgis.utils import iface
+from os.path import expanduser
+
+
 # Initialize Qt resources from file resources.py
 import resources
+
 # Import the code for the dialog
 from geo_grid_cut_dialog import geogridcutDialog
 import os.path
-
+import os
+import processing
+import shutil
 
 class geogridcut:
     """QGIS Plugin Implementation."""
@@ -190,4 +198,121 @@ class geogridcut:
         if result:
             # Do something useful here - delete the line containing pass and
             # substitute with your code.
-            pass
+            self.cut()
+
+
+    def cut(self):
+
+        #######  PARAMS  #######
+
+        originX = -15
+        originY = 60
+
+        stepX = 10
+        stepY = 10
+
+        width =  30  #360
+        height = 30  #180
+
+        iterationsX = width / stepX
+        iterationsY = height / stepY
+
+        buffer = 1
+
+        j = 0
+        i = 0
+
+        targetBaseFolder = "/Users/pedrosousa/geo" #self.dlg.lineEditOutputFolder.text()
+
+        #######  MAIN   #######
+
+        for i in xrange(0,iterationsX):
+
+            for j in xrange(0,iterationsY):
+
+                tileId = str(i) + "_" + str(j)
+
+                folder = targetBaseFolder + "/" + tileId
+
+                if not os.path.exists(folder):
+                    os.makedirs(folder)
+
+                #shutil.copy2(QgsProject.instance().homePath() + "/manifest.xml", folder)
+
+                print "Processing tile " + tileId
+
+                minX = (originX + i * stepX) - buffer
+                maxY = (originY - j * stepY) + buffer
+                maxX = (minX + stepX) + buffer
+                minY = (maxY - stepY) -  buffer
+
+                wkt = "POLYGON ((" + str(minX) + " " + str(maxY)+ ", " + str(maxX) + " " + str(maxY) + ", " + str(maxX) + " " + str(minY) + ", " + str(minX) + " " + str(minY) + ", " + str(minX) + " " + str(maxY) + "))"
+
+                tileLayer = iface.addVectorLayer("Polygon?crs=epsg:4326", "tile", "memory")
+                provider = tileLayer.dataProvider()
+                tileFeature = QgsFeature()
+
+                tileFeature.setGeometry(QgsGeometry.fromWkt(wkt))
+                provider.addFeatures( [ tileFeature ] )
+
+                for mapLayer in iface.mapCanvas().layers():
+
+                    layerType = mapLayer.type()
+                    layerName = mapLayer.name()
+                    intersectionName = "intersection_" + layerName + "_" + tileId
+
+                    #vector layers and raster layers are processed differently
+                    if layerType == QgsMapLayer.VectorLayer and layerName != "tile":
+
+                        #Calculate the intersection between the specific grid rectangle and the layer
+                        intersection = processing.runalg("qgis:intersection", mapLayer, tileLayer, None)
+
+                        iface.addVectorLayer(intersection.get("OUTPUT"),intersectionName,"ogr")
+
+                        #create a shapefile for this new intersection layer on the filesystem. A separate folder will be added for each square
+                        intersectionLayer = QgsMapLayerRegistry.instance().mapLayersByName(intersectionName)[0]
+                        QgsVectorFileWriter.writeAsVectorFormat(intersectionLayer, folder + "/" + layerName + ".shp", "utf-8", QgsCoordinateReferenceSystem(4326), "ESRI Shapefile")
+
+                        #remove the intersection layer from the canvas
+                        QgsMapLayerRegistry.instance().removeMapLayers( [intersectionLayer.id()] )
+
+                    elif layerType == QgsMapLayer.RasterLayer:
+
+                        #Calculate the intersection between the specific grid rectangle and the raster layer
+                        intersection = processing.runalg('saga:clipgridwithpolygon', mapLayer, tileLayer, None)
+
+                        #add the intersection to the map
+                        iface.addRasterLayer(intersection.get("OUTPUT"), intersectionName)
+
+                        #export to file
+                        intersectionLayer = QgsMapLayerRegistry.instance().mapLayersByName(intersectionName)[0]
+
+                        pipe = QgsRasterPipe()
+                        provider = intersectionLayer.dataProvider()
+                        pipe.set(provider.clone())
+
+                        rasterWriter = QgsRasterFileWriter(folder + "/" + layerName + ".tif")
+                        xSize = provider.xSize()
+                        ySize = provider.ySize()
+
+                        rasterWriter.writeRaster(pipe, xSize, ySize, provider.extent(), provider.crs())
+
+                        #remove the intersection layer from the canvas
+                        QgsMapLayerRegistry.instance().removeMapLayers( [intersectionLayer.id()] )
+
+                    else:
+                        print "layer type not supported"
+
+                #remove the temporary tile
+                QgsMapLayerRegistry.instance().removeMapLayers( [tileLayer.id()] )
+
+                #create boundaries file
+                text_file = open(folder + "/boundaries.txt", "w")
+                text_file.write(str(minX) + " " + str(maxX) + " " + str(minY) + " " + str(maxY))
+                text_file.close()
+
+                #create zip file
+                shutil.make_archive( targetBaseFolder + "/" + tileId, 'zip', folder)
+
+                #remove temporary folder
+                shutil.rmtree(folder)

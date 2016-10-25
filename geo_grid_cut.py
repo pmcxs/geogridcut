@@ -21,10 +21,9 @@
  ***************************************************************************/
 """
 from PyQt4.QtCore import QSettings, QTranslator, qVersion, QCoreApplication
-from PyQt4.QtGui import QAction, QIcon,QFileDialog
+from PyQt4.QtGui import QAction, QIcon
 from qgis.core import QgsProject,QgsFeature,QgsGeometry,QgsMapLayer,QgsMapLayerRegistry,QgsVectorFileWriter,QgsCoordinateReferenceSystem,QgsRasterPipe,QgsRasterFileWriter
 from qgis.utils import iface
-from os.path import expanduser
 
 
 # Initialize Qt resources from file resources.py
@@ -36,6 +35,7 @@ import os.path
 import os
 import processing
 import shutil
+import math
 
 class geogridcut:
     """QGIS Plugin Implementation."""
@@ -178,6 +178,7 @@ class geogridcut:
 
 
     def unload(self):
+
         """Removes the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
             self.iface.removePluginMenu(
@@ -189,11 +190,13 @@ class geogridcut:
 
 
     def run(self):
+
         """Run method that performs all the real work"""
         # show the dialog
         self.dlg.show()
         # Run the dialog event loop
         result = self.dlg.exec_()
+
         # See if OK was pressed
         if result:
             # Do something useful here - delete the line containing pass and
@@ -205,46 +208,54 @@ class geogridcut:
 
         #######  PARAMS  #######
 
-        originX = -15
-        originY = 60
+        ptargetBaseFolder = self.dlg.lineEditOutputFolder.text()
+        print "Output folder:" + ptargetBaseFolder
 
-        stepX = 10
-        stepY = 10
+        pminX = self.dlg.spinMinLon.value()
+        pmaxX = self.dlg.spinMaxLon.value()
+        pminY = self.dlg.spinMinLat.value()
+        pmaxY = self.dlg.spinMaxLat.value()
 
-        width =  30  #360
-        height = 30  #180
+        print "Extents: X:[" + str(pminX) + ";" + str(pmaxX) + "] Y:[" + str(pminY) + ";" + str(pmaxY) + "]"
 
-        iterationsX = width / stepX
-        iterationsY = height / stepY
+        pgridSizeX = self.dlg.spinWidth.value()
+        pgridSizeY = self.dlg.spinHeight.value()
 
-        buffer = 1
+        print "Grid Size: [" + str(pgridSizeX) + ";" + str(pgridSizeY) + "]"
 
-        j = 0
-        i = 0
+        pbuffer = self.dlg.spinBuffer.value()
+        print "Buffer: " + str(pbuffer)
 
-        targetBaseFolder = "/Users/pedrosousa/geo" #self.dlg.lineEditOutputFolder.text()
+        pzipOutput = self.dlg.checkBoxCompress.isChecked()
+        print "Compress output: " + str(pzipOutput)
+
+        pcreateBoundariesFile = self.dlg.checkBoxBoundaries.isChecked()
+        print "Create Boundaries file: " + str(pcreateBoundariesFile)
 
         #######  MAIN   #######
 
-        for i in xrange(0,iterationsX):
+        nrCellsX = math.ceil((pmaxX - pminX) / pgridSizeX)
+        nrCellsY = math.ceil((pmaxY - pminY) / pgridSizeY)
 
-            for j in xrange(0,iterationsY):
+        j = 0
+        i = 0
+        for i in xrange(0,nrCellsX):
+
+            for j in xrange(0,nrCellsY):
 
                 tileId = str(i) + "_" + str(j)
 
-                folder = targetBaseFolder + "/" + tileId
+                folder = ptargetBaseFolder + "/" + tileId
 
                 if not os.path.exists(folder):
                     os.makedirs(folder)
 
-                #shutil.copy2(QgsProject.instance().homePath() + "/manifest.xml", folder)
+                print "Processing cell " + tileId
 
-                print "Processing tile " + tileId
-
-                minX = (originX + i * stepX) - buffer
-                maxY = (originY - j * stepY) + buffer
-                maxX = (minX + stepX) + buffer
-                minY = (maxY - stepY) -  buffer
+                minX = (pminX + i * pgridSizeX) - pbuffer
+                maxY = (pmaxY - j * pgridSizeY) + pbuffer
+                maxX = (minX + pgridSizeX) + pbuffer
+                minY = (maxY - pgridSizeY) -  pbuffer
 
                 wkt = "POLYGON ((" + str(minX) + " " + str(maxY)+ ", " + str(maxX) + " " + str(maxY) + ", " + str(maxX) + " " + str(minY) + ", " + str(minX) + " " + str(minY) + ", " + str(minX) + " " + str(maxY) + "))"
 
@@ -307,12 +318,12 @@ class geogridcut:
                 QgsMapLayerRegistry.instance().removeMapLayers( [tileLayer.id()] )
 
                 #create boundaries file
-                text_file = open(folder + "/boundaries.txt", "w")
-                text_file.write(str(minX) + " " + str(maxX) + " " + str(minY) + " " + str(maxY))
-                text_file.close()
+                if pcreateBoundariesFile:
+                    text_file = open(folder + "/boundaries.txt", "w")
+                    text_file.write(str(minX) + " " + str(maxX) + " " + str(minY) + " " + str(maxY))
+                    text_file.close()
 
                 #create zip file
-                shutil.make_archive( targetBaseFolder + "/" + tileId, 'zip', folder)
-
-                #remove temporary folder
-                shutil.rmtree(folder)
+                if pzipOutput:
+                    shutil.make_archive( ptargetBaseFolder + "/" + tileId, 'zip', folder)
+                    shutil.rmtree(folder)
